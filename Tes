@@ -1,0 +1,333 @@
+local Window = Rayfield:CreateWindow({
+    Name = "SCRIPTS AUTO SUMMIT V3|| By Tarzz",
+    Icon = 0,
+    LoadingTitle = "Loading...",
+    LoadingSubtitle = "By Trzzhub",
+    ShowText = "Scripts",
+    Theme = "DarkBlue",
+    ToggleUIKeybind = "K",
+    ConfigurationSaving = {
+        Enabled = true,
+        FolderName = nil,
+        FileName = "TrzzHub"
+    },
+    KeySystem = true,
+    KeySettings = {
+        Title = "TrzzHub",
+        Subtitle = "Key System",
+        Note = "Key ada di saluran: @TrzzHub",
+        FileName = "Key",
+        SaveKey = false,
+        Key = {"1"}
+
+-- AutoWalkRecorder.lua
+-- Script: Auto-walk + recorder + walking animation
+-- Tempatkan sebagai LocalScript di StarterPlayerScripts atau StarterGui (LocalScript)
+-- Cara pakai singkat:
+-- 1) Masukkan script ini ke dalam StarterPlayer > StarterPlayerScripts atau sebagai LocalScript di StarterGui.
+-- 2) Saat bermain, akan muncul sebuah kotak (GUI) di layar dengan tombol: Record, Stop, Play, Clear, Show Data.
+-- 3) Tekan Record untuk mulai merekam posisi karakter (sampling setiap 0.2 detik).
+-- 4) Tekan Stop untuk berhenti merekam.
+-- 5) Tekan Play untuk auto-walk mengikuti rekaman.
+-- 6) Tekan Clear untuk menghapus rekaman.
+-- 7) Tekan Show Data untuk melihat / copy string rekaman (bisa disalin manual dari Output atau TextBox yang muncul).
+-- Catatan: Script ini menggunakan TweenService untuk perpindahan halus dan Humanoid:LoadAnimation untuk animasi jalan.
+-- Ganti ANIMATION_ID jika ingin pakai animasi lain.
+
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+local character = nil
+local hrp = nil
+local humanoid = nil
+
+local RECORD_INTERVAL = 0.2 -- detik, frekuensi sampling saat merekam
+local WALK_SPEED = 16 -- kecepatan humanoid saat berjalan saat memutar animasi
+local ANIMATION_ID = "rbxassetid://180436334" -- default run/walk animation (ganti jika perlu)
+
+-- State
+local recording = false
+local recordedPoints = {} -- array of {CFrame}
+local recordConnection = nil
+local animTrack = nil
+
+-- Utility: Ensure character
+local function setupCharacter()
+    character = player.Character or player.CharacterAdded:Wait()
+    hrp = character:WaitForChild("HumanoidRootPart")
+    humanoid = character:WaitForChild("Humanoid")
+end
+
+-- Create GUI (kotak)
+local function createGui()
+    -- ScreenGui
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "AutoWalkRecorderGui"
+    screenGui.ResetOnSpawn = false
+    screenGui.Parent = player:WaitForChild("PlayerGui")
+
+    -- Frame (kotak)
+    local frame = Instance.new("Frame")
+    frame.Name = "ControlBox"
+    frame.Size = UDim2.new(0, 260, 0, 200)
+    frame.Position = UDim2.new(0.02, 0, 0.02, 0)
+    frame.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    frame.BorderSizePixel = 0
+    frame.Parent = screenGui
+
+    local uiCorner = Instance.new("UICorner", frame)
+    uiCorner.CornerRadius = UDim.new(0, 8)
+
+    -- Title
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -12, 0, 28)
+    title.Position = UDim2.new(0, 6, 0, 6)
+    title.BackgroundTransparency = 1
+    title.Text = "AutoWalk Recorder"
+    title.TextColor3 = Color3.fromRGB(255,255,255)
+    title.Font = Enum.Font.SourceSansBold
+    title.TextSize = 18
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = frame
+
+    -- Buttons helper
+    local function makeButton(name, y, text)
+        local btn = Instance.new("TextButton")
+        btn.Name = name
+        btn.Size = UDim2.new(0, 120, 0, 36)
+        btn.Position = UDim2.new(0, 8 + ((y-1)%2)*130, 0, 40 + math.floor((y-1)/2)*44)
+        btn.BackgroundColor3 = Color3.fromRGB(50,50,50)
+        btn.TextColor3 = Color3.fromRGB(255,255,255)
+        btn.Text = text
+        btn.Font = Enum.Font.SourceSans
+        btn.TextSize = 16
+        btn.Parent = frame
+        local corner = Instance.new("UICorner", btn)
+        corner.CornerRadius = UDim.new(0,6)
+        return btn
+    end
+
+    local btnRecord = makeButton("RecordBtn", 1, "Record")
+    local btnStop = makeButton("StopBtn", 2, "Stop")
+    local btnPlay = makeButton("PlayBtn", 3, "Play")
+    local btnClear = makeButton("ClearBtn", 4, "Clear")
+
+    -- Show data (TextBox)
+    local showBtn = Instance.new("TextButton")
+    showBtn.Name = "ShowBtn"
+    showBtn.Size = UDim2.new(0, 240, 0, 28)
+    showBtn.Position = UDim2.new(0, 8, 0, 40 + 3*44)
+    showBtn.BackgroundColor3 = Color3.fromRGB(50,50,50)
+    showBtn.TextColor3 = Color3.fromRGB(255,255,255)
+    showBtn.Text = "Show / Copy Data"
+    showBtn.Font = Enum.Font.SourceSans
+    showBtn.TextSize = 14
+    showBtn.Parent = frame
+    local corner2 = Instance.new("UICorner", showBtn)
+    corner2.CornerRadius = UDim.new(0,6)
+
+    local dataBox = Instance.new("TextBox")
+    dataBox.Name = "DataBox"
+    dataBox.Size = UDim2.new(1, -12, 0, 64)
+    dataBox.Position = UDim2.new(0, 6, 0, 40 + 4*44)
+    dataBox.BackgroundColor3 = Color3.fromRGB(28,28,28)
+    dataBox.TextColor3 = Color3.fromRGB(220,220,220)
+    dataBox.Text = ""
+    dataBox.ClearTextOnFocus = false
+    dataBox.MultiLine = true
+    dataBox.TextWrapped = true
+    dataBox.Parent = frame
+    local corner3 = Instance.new("UICorner", dataBox)
+    corner3.CornerRadius = UDim.new(0,6)
+
+    return {
+        ScreenGui = screenGui,
+        Frame = frame,
+        RecordBtn = btnRecord,
+        StopBtn = btnStop,
+        PlayBtn = btnPlay,
+        ClearBtn = btnClear,
+        ShowBtn = showBtn,
+        DataBox = dataBox
+    }
+end
+
+-- Setup animation
+local function loadWalkAnimation()
+    if not humanoid then return end
+    local animator = humanoid:FindFirstChildOfClass("Animator")
+    if not animator then
+        animator = Instance.new("Animator")
+        animator.Parent = humanoid
+    end
+    local animation = Instance.new("Animation")
+    animation.Name = "AutoWalkAnim"
+    animation.AnimationId = ANIMATION_ID
+    animTrack = animator:LoadAnimation(animation)
+    animTrack.Priority = Enum.AnimationPriority.Movement
+end
+
+-- Recording logic
+local function startRecording()
+    if recording then return end
+    recording = true
+    recordedPoints = {}
+    -- sample
+    recordConnection = RunService.Heartbeat:Connect(function(dt)
+        -- use a simple timer
+        local elapsed = 0
+        elapsed = elapsed + dt -- local var resets each frame; we need closure-based timer
+    end)
+
+    -- Because Heartbeat callback with closure timer is messy, use a coroutine-based loop
+    coroutine.wrap(function()
+        while recording do
+            if hrp then
+                table.insert(recordedPoints, hrp.CFrame)
+            end
+            wait(RECORD_INTERVAL)
+        end
+    end)()
+end
+
+local function stopRecording()
+    recording = false
+    if recordConnection then
+        recordConnection:Disconnect()
+        recordConnection = nil
+    end
+end
+
+-- Play (auto-walk) logic: use TweenService to move HRP across points
+local function playRecorded()
+    if #recordedPoints < 2 then
+        warn("Tidak ada cukup titik rekaman untuk diputar")
+        return
+    end
+
+    -- disable default humanoid auto-walk while tweening
+    local oldWalkSpeed = humanoid.WalkSpeed
+    humanoid.WalkSpeed = WALK_SPEED
+
+    -- play animation if ada
+    if animTrack then
+        animTrack:Play()
+    end
+
+    -- sequentially tween between points
+    for i = 1, #recordedPoints do
+        local targetCFrame = recordedPoints[i]
+        if not hrp or not hrp.Parent then break end
+        -- compute distance from current position
+        local startPos = hrp.Position
+        local endPos = targetCFrame.Position
+        local dist = (endPos - startPos).Magnitude
+        local speed = math.max(6, WALK_SPEED) -- minimal speed
+        local travelTime = dist / speed
+        -- create tween for CFrame
+        local tweenInfo = TweenInfo.new(math.max(0.05, travelTime), Enum.EasingStyle.Linear)
+        local success, err = pcall(function()
+            local tween = TweenService:Create(hrp, tweenInfo, {CFrame = targetCFrame})
+            tween:Play()
+            tween.Completed:Wait()
+        end)
+        if not success then
+            warn("Tween error:", err)
+            break
+        end
+    end
+
+    -- stop animation
+    if animTrack then
+        animTrack:Stop()
+    end
+    humanoid.WalkSpeed = oldWalkSpeed
+end
+
+-- Utility: serialize recordedPoints to a simple string (x,y,z|x,y,z|...)
+local function serializePoints()
+    local parts = {}
+    for _,cf in ipairs(recordedPoints) do
+        local p = cf.p
+        table.insert(parts, string.format("%.3f,%.3f,%.3f", p.X, p.Y, p.Z))
+    end
+    return table.concat(parts, "|")
+end
+
+local function deserializePoints(s)
+    local points = {}
+    for token in string.gmatch(s, "([^|]+)") do
+        local x,y,z = token:match("([-0-9%.]+),([-0-9%.]+),([-0-9%.]+)")
+        if x and y and z then
+            local v = Vector3.new(tonumber(x), tonumber(y), tonumber(z))
+            table.insert(points, CFrame.new(v))
+        end
+    end
+    return points
+end
+
+-- Main
+setupCharacter()
+local gui = createGui()
+loadWalkAnimation()
+
+-- Button events
+gui.RecordBtn.MouseButton1Click:Connect(function()
+    if recording then return end
+    -- clear existing
+    recordedPoints = {}
+    startRecording()
+    gui.RecordBtn.Text = "Recording..."
+end)
+
+gui.StopBtn.MouseButton1Click:Connect(function()
+    if not recording then return end
+    stopRecording()
+    gui.RecordBtn.Text = "Record"
+    -- update data box
+    gui.DataBox.Text = serializePoints()
+end)
+
+gui.PlayBtn.MouseButton1Click:Connect(function()
+    if recording then
+        warn("Berhenti merekam dulu sebelum memutar rekaman")
+        return
+    end
+    -- if data box has content, try parse it (user mungkin paste)
+    if gui.DataBox.Text ~= "" then
+        local parsed = deserializePoints(gui.DataBox.Text)
+        if #parsed > 1 then
+            recordedPoints = parsed
+        end
+    end
+    -- run playback in coroutine
+    coroutine.wrap(function()
+        playRecorded()
+    end)()
+end)
+
+gui.ClearBtn.MouseButton1Click:Connect(function()
+    stopRecording()
+    recordedPoints = {}
+    gui.DataBox.Text = ""
+    gui.RecordBtn.Text = "Record"
+end)
+
+gui.ShowBtn.MouseButton1Click:Connect(function()
+    gui.DataBox.Text = serializePoints()
+end)
+
+-- Auto-reconnect character on respawn
+player.CharacterAdded:Connect(function(char)
+    character = char
+    hrp = character:WaitForChild("HumanoidRootPart")
+    humanoid = character:WaitForChild("Humanoid")
+    loadWalkAnimation()
+end)
+
+-- Safety: cleanup on script disable
+script.Disabled = false
+
+-- End of script
